@@ -96,7 +96,7 @@ WSUS Signing Certificate
 # End of Customizations ║
 # ══════════════════════╝
 
-# Import required module[s]
+# Import required modules and Windows features
 ﻿if (Get-Module -Name 'PSPKI' -ListAvailable) { 
     Write-Information 'The PSPKI module is installed.'
 } else {
@@ -106,6 +106,17 @@ WSUS Signing Certificate
     }
     catch {
         Write-Error 'PSPKI module installation failed.'
+    }
+}
+if ( (Get-WindowsCapability -Online -Name 'Rsat.CertificateServices.Tools~~~~0.0.1.0').Stated -eq 'Installed') {
+    Write-Information 'The Certificate Services RSAT feature is installed.'
+}
+else {
+    try {
+        Get-WindowsCapability -Online -Name 'Rsat.CertificateServices.Tools~~~~0.0.1.0' | Add-WindowsCapability -Online
+    }
+    catch {
+        Write-Error 'Failed to install the Certificate Services RSAT feature. Please do so manually.'
     }
 }
 # End of module installation check
