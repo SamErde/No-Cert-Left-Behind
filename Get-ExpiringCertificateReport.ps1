@@ -96,7 +96,19 @@ WSUS Signing Certificate
 # End of Customizations ║
 # ══════════════════════╝
 
-Import-Module PSPKI
+# Import required module[s]
+﻿if (Get-Module -Name 'PSPKI' -ListAvailable) { 
+    Write-Information 'The PSPKI module is installed.'
+} else {
+    Write-Information 'The PSPKI module is not installed. Attempting installation...'
+    try {
+        Install-Module -Name PSPKI -AllowClobber -Scope CurrentUser -Force
+    }
+    catch {
+        Write-Error 'PSPKI module installation failed.'
+    }
+}
+# End of module installation check
 
 # ═══════════════════════════════════════════════════════════════════════════════════════╗
 # Shortcut (code snippet) variables: these make the following code simpler to work with: ║
