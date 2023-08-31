@@ -1,9 +1,7 @@
 # No Cert Left Behind
-Generate a report of exiring certificates from your Active Directory Certificate Services Certificate Authority.
+Generate a report of expiring certificates from your Active Directory Certificate Services Certificate Authority.
 
-This script checks ADCS Certificate Authorities for issued certificate requests that are expiring in the next 45 days.
-
-Specify a list of template names to include, and it will translate that to their OIDs, find expiring certs using those templates, and then send a report as directed.
+This script checks ADCS Certificate Authorities for issued certificate requests that are expiring in the next 45 days. Specify a list of the template names that you want to check, and it will translate that to their OIDs, find expiring certs using those templates, and then send a report as directed. It is recommended to ignore certain templates that are always automatically renewed by computer and users.
 
 Depends on the PSPKI module at https://www.powershellgallery.com/packages/PSPKI and the AD Certificate Services RSAT feature.
 
