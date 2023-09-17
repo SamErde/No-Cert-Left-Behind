@@ -1,3 +1,4 @@
+![Banner image: An old attic cluttered with a wooden chest and shelves full of old papers.](NoCertLeftBehind.jpg)
 # No Cert Left Behind
 Generate a report of expiring certificates from your Active Directory Certificate Services Certificate Authority.
 
