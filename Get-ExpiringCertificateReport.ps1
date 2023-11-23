@@ -50,7 +50,7 @@ $Header = @"
 ╚══════╝╚══════╝╚═╝        ╚═╝       ╚═════╝ ╚══════╝╚═╝  ╚═╝╚═╝╚═╝  ╚═══╝╚═════╝ 
 
 v$Version                                                                          
- 
+ 
 "@
 Write-Host -ForegroundColor Cyan $Header
 
@@ -63,7 +63,7 @@ $From = 'NoCertLeftBehind@example.com'
 $SMTPServer = 'smtp.example.com'
 
 # Change "DaysLeft" to whatever lead time you want for the notification of expiring certificates.
-$DaysLeft = 45
+$DaysLeft = 30
 
 # List the display names of the certificate templates that you want to monitor using a multi-line here-string that is converted to an array.
 # This is simply easier than typing every name in quotes and separating them with a comma.
@@ -97,7 +97,7 @@ WSUS Signing Certificate
 # ══════════════════════╝
 
 # Import required modules and Windows features
-﻿if (Get-Module -Name 'PSPKI' -ListAvailable) { 
+if (Get-Module -Name 'PSPKI' -ListAvailable) { 
     Write-Information 'The PSPKI module is installed.'
 } else {
     Write-Information 'The PSPKI module is not installed. Attempting installation...'
@@ -151,40 +151,40 @@ $Domain = $([System.DirectoryServices.ActiveDirectory.Domain]::GetComputerDomain
 # Collect the data: ║
 
 # Find certificate authorities in the domain and get their hostname[s]
-Write-Host "Finding certificate authorities in $Domain..."
+Write-Information "Finding certificate authorities in $Domain..."
 $CANames = (Get-CA | Select-Object Computername).Computername
 if ($CANames.Count -lt 1) {
     Write-Warning "No certificate authorities were found in Active Directory."
     Break
 }
-Write-Host "Found: $CANames `n"
+Write-Information "Found: $CANames `n"
 
 # Get OIDs of all certificate templates that you want to monitor. The script takes MUCH longer when querying by template name.
-Write-Host "Getting OIDs for $($TemplateNamesIncluded.Count) certificate templates..."
+Write-Information "Getting OIDs for $($TemplateNamesIncluded.Count) certificate templates..."
 $TemplateOidsIncluded = foreach ($item in $TemplateNamesIncluded) {
     try {
         (Get-CertificateTemplate -DisplayName $item).Oid.Value
     }
     catch {
-        Write-Host "Unable to get the certificate templates. Please review the error and try again."
+        Write-Warning "Unable to get the certificate templates. Please review the error and try again."
         Write-Error $error
         Break
     }
 }
 
 # Get all relevant certificates that are expiring within the next 45 days.
-Write-Host `n"Getting certifictes that are expiring in the next $DaysLeft days from $CANames..."
+Write-Information `n"Getting certifictes that are expiring in the next $DaysLeft days from $CANames..."
 $Certificates = ( Get-IssuedRequest -CertificationAuthority $CANames -Property [Request.RequesterName], CertificateHash -Filter $CertAgeFilter ).Where( 
     { $TemplateOidsIncluded -imatch $_.CertificateTemplate } ) | 
     Select-Object *, $CaName, $CertTemplateName, @{Name="Thumbprint"; Expression = { $_.CertificateHash -Replace (' ','') } }
     # In the above line, $CaName and $CertTemplateName are "shortcut snippet variables" like a function that formats or translates the desired output.
 
 if ($certificates.Length -eq 0) { 
-    Write-Output "No certificates were found to report on."
+    Write-Information "No certificates were found to report on."
     Break
 }
 else {
-    Write-Host -ForegroundColor Yellow "Found $($Certificates.Count) certificates that expire within $DaysLeft days..."
+    Write-Information "Found $($Certificates.Count) certificates that expire within $DaysLeft days..."
 }
 
 # Done getting the certificates. ║
