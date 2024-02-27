@@ -1,5 +1,7 @@
 # No Cert Left Behind
 
+[![Codacy Badge](https://api.codacy.com/project/badge/Grade/92b18813ce1a4668b804be370fa004bb)](https://app.codacy.com/gh/SamErde/No-Cert-Left-Behind?utm_source=github.com&utm_medium=referral&utm_content=SamErde/No-Cert-Left-Behind&utm_campaign=Badge_Grade)
+
 ![Banner image: An old attic cluttered with a wooden chest and shelves full of old papers.](NoCertLeftBehind.jpg)
 Image Credit: [Peter Herrmann](https://unsplash.com/@tama66) via Unsplash.
 
