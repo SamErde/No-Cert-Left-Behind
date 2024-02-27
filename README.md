@@ -5,6 +5,8 @@ Image Credit: [Peter Herrmann](https://unsplash.com/@tama66) via Unsplash.
 
 Generate a report of expiring certificates from your Active Directory Certificate Services Certificate Authority.
 
+[![Codacy Badge](https://api.codacy.com/project/badge/Grade/92b18813ce1a4668b804be370fa004bb)](https://app.codacy.com/gh/SamErde/No-Cert-Left-Behind?utm_source=github.com&utm_medium=referral&utm_content=SamErde/No-Cert-Left-Behind&utm_campaign=Badge_Grade)
+
 This script checks ADCS Certificate Authorities for issued certificate requests that are expiring in the next 45 days. Specify a list of the template names that you want to check, and it will translate that to their OIDs, find expiring certs using those templates, and then send a report as directed. It is recommended to ignore certain templates that are always automatically renewed by computer and users.
 
 Depends on the PSPKI module at https://www.powershellgallery.com/packages/PSPKI and the AD Certificate Services RSAT feature.
