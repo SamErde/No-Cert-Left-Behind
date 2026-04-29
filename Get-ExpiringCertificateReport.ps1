@@ -5,8 +5,8 @@ function Get-ExpiringCertificateReport {
 
         .DESCRIPTION
         This script checks ADCS Certificate Authorities for issued certificate requests that are expiring within the configured lead time.
-        Specify a list of template names to include, and it will translate that to their OIDs, find expiring certs using those
-        templates, and then send a report as directed.
+        Specify a list of certificate templates to include, and it will resolve the provided identifiers (for example OID, short
+        name, or DisplayName), find expiring certs using those templates, and then send a report as directed.
 
         .PARAMETER Recipients
         To-Do: Add a function parameter to send an email to specific recipients.
