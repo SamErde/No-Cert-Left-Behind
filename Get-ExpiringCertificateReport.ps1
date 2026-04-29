@@ -96,7 +96,7 @@ Signature with Key Encipherment
 Subordinate Certification Authority
 Web Server
 WSUS Signing Certificate
-'@).Split([Environment]::NewLine) | Where-Object { -not [string]::IsNullOrWhiteSpace($_) }
+'@).Split([Environment]::NewLine) | ForEach-Object { $_.Trim() } | Where-Object { -not [string]::IsNullOrWhiteSpace($_) }
 
     # End of Customizations ║
     # ══════════════════════╝
