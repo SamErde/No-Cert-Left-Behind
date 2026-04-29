@@ -1,12 +1,12 @@
 function Get-ExpiringCertificateReport {
     <#
         .SYNOPSIS
-        Generate a report of exiring certificates from an Active Directory Certificate Services Certificate Authority.
+        Generate a report of expiring certificates from an Active Directory Certificate Services Certificate Authority.
 
         .DESCRIPTION
-        This script checks ADCS Certificate Authorities for issued certificate requests that are expiring in the next 45 days.
-        Specify a list of template names to include, and it will translate that to their OIDs, find expiring certs using those
-        templates, and then send a report as directed.
+        This script checks ADCS Certificate Authorities for issued certificate requests that are expiring within the configured lead time.
+        Specify a list of certificate templates to include, and it will resolve the provided identifiers (for example OID, short
+        name, or DisplayName), find expiring certs using those templates, and then send a report as directed.
 
         .PARAMETER Recipients
         To-Do: Add a function parameter to send an email to specific recipients.
@@ -96,7 +96,7 @@ Signature with Key Encipherment
 Subordinate Certification Authority
 Web Server
 WSUS Signing Certificate
-'@).Split([Environment]::NewLine)
+'@).Split([Environment]::NewLine) | ForEach-Object { $_.Trim() } | Where-Object { -not [string]::IsNullOrWhiteSpace($_) }
 
     # End of Customizations ║
     # ══════════════════════╝
@@ -112,7 +112,7 @@ WSUS Signing Certificate
             Write-Error 'PSPKI module installation failed.'
         }
     }
-    if ( (Get-WindowsCapability -Online -Name 'Rsat.CertificateServices.Tools~~~~0.0.1.0').Stated -eq 'Installed') {
+    if ( (Get-WindowsCapability -Online -Name 'Rsat.CertificateServices.Tools~~~~0.0.1.0').State -eq 'Installed') {
         Write-Information 'The Certificate Services RSAT feature is installed.'
     } else {
         try {
@@ -132,12 +132,22 @@ WSUS Signing Certificate
     # Certificate age filter statement.  Used within Get-CertificateRequests below.
     $CertAgeFilter = "NotAfter -ge $(Get-Date)", "NotAfter -le $((Get-Date).AddDays($DaysLeft))"
 
-    # Translate a certificate template OID to its readable display name. Used within Get-CertificateRequests below.
+    $TemplateDisplayNameByIdentifier = @{}
+
+    # Translate a certificate template identifier to its readable display name. Used within Get-CertificateRequests below.
     $CertTemplateName = @{ Name = 'TemplateName'; Expression = {
-            if ($_.CertificateTemplate -like '1*') {
-                (Get-CertificateTemplate -OID $_.CertificateTemplate).DisplayName
+            $TemplateIdentifier = $_.CertificateTemplate
+            if (-not [string]::IsNullOrWhiteSpace($TemplateIdentifier) -and $TemplateDisplayNameByIdentifier.ContainsKey($TemplateIdentifier)) {
+                $TemplateDisplayNameByIdentifier[$TemplateIdentifier]
+            } elseif ($TemplateIdentifier -like '1*') {
+                $CertificateTemplate = Get-CertificateTemplate -OID $TemplateIdentifier
+                if ($null -ne $CertificateTemplate) {
+                    $CertificateTemplate.DisplayName
+                } else {
+                    $TemplateIdentifier
+                }
             } else {
-                $_.CertificateTemplate
+                $TemplateIdentifier
             }
         }
     } # End CertTemplateName
@@ -156,32 +166,55 @@ WSUS Signing Certificate
     $CANames = (Get-CA | Select-Object Computername).Computername
     if ($CANames.Count -lt 1) {
         Write-Warning 'No certificate authorities were found in Active Directory.'
-        Break
+        return
     }
     Write-Information "Found: $CANames `n"
 
-    # Get OIDs of all certificate templates that you want to monitor. The script takes MUCH longer when querying by template name.
-    Write-Information "Getting OIDs for $($TemplateNamesIncluded.Count) certificate templates..."
-    $TemplateOidsIncluded = foreach ($item in $TemplateNamesIncluded) {
-        try {
-            (Get-CertificateTemplate -DisplayName $item).Oid.Value
-        } catch {
-            Write-Warning 'Unable to get the certificate templates. Please review the error and try again.'
-            Write-Error $error
-            Break
+    # Get all identifiers for the certificate templates that you want to monitor.
+    # Some issued requests expose the template short name, such as SubCA, instead of an OID.
+    Write-Information "Getting identifiers for $($TemplateNamesIncluded.Count) certificate templates..."
+    $TemplateIdentifiersIncluded = @(
+        foreach ($Item in $TemplateNamesIncluded) {
+            try {
+                $CertificateTemplate = Get-CertificateTemplate -DisplayName $Item
+                if ($null -eq $CertificateTemplate) {
+                    Write-Warning "Certificate template '$Item' was not found or could not be retrieved."
+                    continue
+                }
+
+                $TemplateIdentifiers = @(
+                    $CertificateTemplate.Oid.Value
+                    $CertificateTemplate.Name
+                    $CertificateTemplate.DisplayName
+                ) | Where-Object { -not [string]::IsNullOrWhiteSpace($_) }
+
+                foreach ($TemplateIdentifier in $TemplateIdentifiers) {
+                    $TemplateDisplayNameByIdentifier[$TemplateIdentifier] = $CertificateTemplate.DisplayName
+                }
+
+                $TemplateIdentifiers
+            } catch {
+                Write-Warning "Unable to resolve certificate template '$Item'. Skipping. Error: $_"
+                continue
+            }
         }
+    ) | Select-Object -Unique
+
+    if ($TemplateIdentifiersIncluded.Count -eq 0) {
+        Write-Warning 'No certificate template identifiers were found.'
+        return
     }
 
-    # Get all relevant certificates that are expiring within the next 45 days.
-    Write-Information `n"Getting certifictes that are expiring in the next $DaysLeft days from $CANames..."
+    # Get all relevant certificates that are expiring within the configured lead time.
+    Write-Information "`nGetting certificates that are expiring in the next $DaysLeft days from $CANames..."
     $Certificates = ( Get-IssuedRequest -CertificationAuthority $CANames -Property [Request.RequesterName], CertificateHash -Filter $CertAgeFilter ).Where(
-        { $TemplateOidsIncluded -imatch $_.CertificateTemplate } ) |
+        { $TemplateIdentifiersIncluded -contains $_.CertificateTemplate } ) |
         Select-Object *, $CaName, $CertTemplateName, @{Name = 'Thumbprint'; Expression = { $_.CertificateHash -Replace (' ', '') } }
     # In the above line, $CaName and $CertTemplateName are "shortcut snippet variables" like a function that formats or translates the desired output.
 
-    if ($certificates.Length -eq 0) {
+    if ($Certificates.Count -eq 0) {
         Write-Information 'No certificates were found to report on.'
-        Break
+        return
     } else {
         Write-Information "Found $($Certificates.Count) certificates that expire within $DaysLeft days..."
     }
@@ -194,24 +227,24 @@ WSUS Signing Certificate
     # Build and send the report: ║
 
     # Create a structured table with certificate details. Designed specifically for an HTML-based email.
-    $table = [System.Data.DataTable]::New('CertificatesTable')
+    $Table = [System.Data.DataTable]::New('CertificatesTable')
     @(
         'Name'
         'Expiration'
         'Identifiers'
         'Requester'
         'CA'
-    ) | ForEach-Object { $table.Columns.Add($_) | Out-Null }
+    ) | ForEach-Object { $Table.Columns.Add($_) | Out-Null }
 
     # Add each certificate to the table
-    foreach ($cert in $certificates) {
-        $certRow = $table.NewRow()
-        $certRow.Name = "$($cert.CommonName)╗($($cert.Templatename))"
-        $certRow.Expiration = $cert.NotAfter
-        $certRow.Requester = $cert.'Request.RequesterName'
-        $certRow.Identifiers = "Serial: $($cert.SerialNumber)╗Thumbprint: $($cert.Thumbprint)╗Request ID: $($cert.RequestID)"
-        $certRow.CA = $cert.CA
-        $table.Rows.Add($CertRow)
+    foreach ($Certificate in $Certificates) {
+        $CertificateRow = $Table.NewRow()
+        $CertificateRow.Name = "$($Certificate.CommonName)╗($($Certificate.Templatename))"
+        $CertificateRow.Expiration = $Certificate.NotAfter
+        $CertificateRow.Requester = $Certificate.'Request.RequesterName'
+        $CertificateRow.Identifiers = "Serial: $($Certificate.SerialNumber)╗Thumbprint: $($Certificate.Thumbprint)╗Request ID: $($Certificate.RequestID)"
+        $CertificateRow.CA = $Certificate.CA
+        $Table.Rows.Add($CertificateRow)
     }
 
     $HtmlHeader = @'
@@ -221,7 +254,7 @@ TD {border-width: 1px; padding: 4px; border-style: solid; border-color: black;}
 </style>
 '@
     $PreContent = "Internally-issued certificates that will expire in the next $DaysLeft days: ╗╗"
-    $EmailHtml = ($table | ConvertTo-Html -Head $HtmlHeader -PreContent $PreContent -Property Name, Expiration, Identifiers, Requester, CA | Out-String).Replace('╗', '<br/>')
+    $EmailHtml = ($Table | ConvertTo-Html -Head $HtmlHeader -PreContent $PreContent -Property Name, Expiration, Identifiers, Requester, CA | Out-String).Replace('╗', '<br/>')
     $Subject = "$Domain Certificate Expiration Report"
     Send-MailMessage -To $To -From $From -SmtpServer $SMTPServer -Subject $Subject -Body $EmailHtml -BodyAsHtml
 }
