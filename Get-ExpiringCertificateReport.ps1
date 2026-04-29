@@ -96,7 +96,7 @@ Signature with Key Encipherment
 Subordinate Certification Authority
 Web Server
 WSUS Signing Certificate
-'@).Split([Environment]::NewLine)
+'@).Split([Environment]::NewLine) | Where-Object { -not [string]::IsNullOrWhiteSpace($_) }
 
     # End of Customizations ║
     # ══════════════════════╝
@@ -179,7 +179,7 @@ WSUS Signing Certificate
                 $CertificateTemplate = Get-CertificateTemplate -DisplayName $Item
                 if ($null -eq $CertificateTemplate) {
                     Write-Warning "Certificate template '$Item' was not found or could not be retrieved."
-                    return
+                    continue
                 }
 
                 $TemplateIdentifiers = @(
@@ -194,9 +194,8 @@ WSUS Signing Certificate
 
                 $TemplateIdentifiers
             } catch {
-                Write-Warning 'Unable to get the certificate templates. Please review the error and try again.'
-                Write-Error $_
-                return
+                Write-Warning "Unable to resolve certificate template '$Item'. Skipping. Error: $_"
+                continue
             }
         }
     ) | Select-Object -Unique
