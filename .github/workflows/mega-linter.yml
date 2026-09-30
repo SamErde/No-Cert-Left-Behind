@@ -80,6 +80,12 @@ jobs:
       - name: Checkout Code
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          # Lint the pull request source revision rather than the synthetic
+          # refs/pull/<n>/merge commit. The write-back job pushes to the source
+          # branch, so the fixes patch has to be generated against that same tree
+          # or it can fail to apply when the base branch has moved.
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+
           # Do not leave a pushable git credential on disk while third-party
           # linter images run against this checkout.
           persist-credentials: false
@@ -168,8 +174,10 @@ jobs:
               github.event_name != 'pull_request' ||
               github.event.pull_request.head.repo.full_name == github.repository
             }}
-          IS_PROTECTED_REF: >-
-            ${{ contains(fromJSON('["refs/heads/main", "refs/heads/master"]'), github.ref) }}
+          # The branch the write-back job would actually push to. On a pull
+          # request github.ref is refs/pull/<n>/merge, so it can never be used to
+          # recognise a source branch named main or master.
+          TARGET_BRANCH: ${{ github.event.pull_request.head.ref || github.ref_name }}
         run: |
           set -euo pipefail
 
@@ -182,8 +190,8 @@ jobs:
             echo "Event '${EVENT_NAME}' does not match APPLY_FIXES_EVENT='${APPLY_FIXES_EVENT}'."
           elif [ "${IS_SAME_REPO}" != "true" ]; then
             echo "Pull request originates from a fork; keeping this run read-only."
-          elif [ "${IS_PROTECTED_REF}" = "true" ]; then
-            echo "Refusing to commit fixes directly to a protected default branch."
+          elif [ "${TARGET_BRANCH}" = "main" ] || [ "${TARGET_BRANCH}" = "master" ]; then
+            echo "Refusing to commit fixes directly to '${TARGET_BRANCH}'."
           else
             apply_fixes="true"
           fi
@@ -261,7 +269,9 @@ jobs:
             exit 1
           fi
 
-          git apply --whitespace=nowarn "${PATCH_FILE}"
+          # --3way lets git fall back to a merge when the branch moved between
+          # the lint job and this job, instead of rejecting the whole patch.
+          git apply --3way --whitespace=nowarn "${PATCH_FILE}"
           git status --short
 
       - name: Commit and push applied linter fixes
