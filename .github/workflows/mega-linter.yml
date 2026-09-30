@@ -197,6 +197,9 @@ jobs:
           fi
 
           if [ "${apply_fixes}" = "true" ]; then
+            # Start from a clean index so only paths staged below can reach the
+            # patch, regardless of what the linters left behind.
+            git reset -q
             git add -A -- . \
               ':(exclude).github/workflows' \
               ':(exclude)megalinter-reports' \
@@ -262,16 +265,41 @@ jobs:
 
           test -s "${PATCH_FILE}"
 
-          # Defence in depth: the lint job already excludes workflow files, so a
-          # patch that touches them means something unexpected happened.
-          if git apply --numstat "${PATCH_FILE}" | cut -f3- | grep -q '^\.github/workflows/'; then
-            echo "::error::Refusing to apply a patch that modifies workflow files."
-            exit 1
-          fi
-
           # --3way lets git fall back to a merge when the branch moved between
           # the lint job and this job, instead of rejecting the whole patch.
           git apply --3way --whitespace=nowarn "${PATCH_FILE}"
+
+          # Defence in depth: the lint job already excludes workflow files, so a
+          # patch that touches them means something unexpected happened.
+          #
+          # Validate what actually landed rather than parsing the patch text.
+          # --no-renames makes a rename show up as both its old and its new path,
+          # -z avoids git's pathname quoting for non-ASCII names, and
+          # ls-files --others catches files the patch created.
+          changed=()
+          while IFS= read -r -d '' path; do
+            changed+=("${path}")
+          done < <(
+            git diff --no-renames --name-only -z HEAD
+            git ls-files --others --exclude-standard -z
+          )
+
+          violation=0
+          if [ "${#changed[@]}" -gt 0 ]; then
+            for path in "${changed[@]}"; do
+              case "${path}" in
+                .github/workflows/*)
+                  echo "::error::Refusing to commit: patch touches workflow file '${path}'."
+                  violation=1
+                  ;;
+              esac
+            done
+          fi
+
+          if [ "${violation}" -ne 0 ]; then
+            exit 1
+          fi
+
           git status --short
 
       - name: Commit and push applied linter fixes
