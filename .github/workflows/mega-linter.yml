@@ -1,5 +1,17 @@
 # MegaLinter GitHub Action configuration file
 # More info at https://megalinter.io
+#
+# Security model
+# --------------
+# Linting runs untrusted repository content inside third-party linter images, so
+# the "MegaLinter" job holds no write access to repository contents and checks
+# the code out without persisting git credentials.
+#
+# Auto-fixes are still applied, but the authenticated write-back is isolated in a
+# separate "apply-fixes" job that never executes linters. It only replays a patch
+# produced by the lint job, and only for same-repository pull requests. Pull
+# requests from forks keep the read-only path: the lint job reports findings and
+# the write-back job is skipped.
 ---
 name: MegaLinter
 
@@ -27,13 +39,16 @@ env:
   # (pull_request, push, all)
   APPLY_FIXES_EVENT: pull_request
 
-  # If APPLY_FIXES is used, defines if the fixes are directly committed (commit)
-  # or posted in a PR (pull_request)
+  # If APPLY_FIXES is used, fixes are committed back to the source branch.
+  # Only "commit" is supported by this workflow.
   APPLY_FIXES_MODE: commit
 
+# Only supersede in-flight runs for the same pull request. Pushes to branches
+# (including main) are allowed to finish so an auto-fix write-back is never
+# cancelled halfway through.
 concurrency:
-  group: ${{ github.ref }}-${{ github.workflow }}
-  cancel-in-progress: true
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 permissions:
   contents: read
@@ -42,13 +57,17 @@ jobs:
   megalinter:
     name: MegaLinter
     runs-on: ubuntu-latest
+    timeout-minutes: 45
 
-    # Give the default GITHUB_TOKEN write permission to commit and push, comment
-    # issues & post new PR; remove the ones you do not need
+    # Untrusted linter execution phase: no write access to repository contents.
+    # pull-requests:write is the single endpoint MegaLinter actually calls, to
+    # post its report as a pull request comment.
     permissions:
-      contents: write
-      issues: write
+      contents: read
       pull-requests: write
+
+    outputs:
+      apply_fixes: ${{ steps.patch.outputs.apply_fixes }}
 
     steps:
 
@@ -59,9 +78,17 @@ jobs:
           egress-policy: audit
 
       - name: Checkout Code
-        uses: actions/checkout@08eba0b27e820071cde6df949e0beb9ba4906955 # v4.3.0
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          token: ${{ secrets.PAT || secrets.GITHUB_TOKEN }}
+          # Lint the pull request source revision rather than the synthetic
+          # refs/pull/<n>/merge commit. The write-back job pushes to the source
+          # branch, so the fixes patch has to be generated against that same tree
+          # or it can fail to apply when the base branch has moved.
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+
+          # Do not leave a pushable git credential on disk while third-party
+          # linter images run against this checkout.
+          persist-credentials: false
 
           # If you use VALIDATE_ALL_CODEBASE = true, you can remove this line to
           # improve performance
@@ -98,6 +125,7 @@ jobs:
               contains(fromJSON('["refs/heads/main", "refs/heads/master"]'), github.ref)
             }}
 
+          # Read-only token in this job; used for the pull request report comment.
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
           # ADD YOUR CUSTOM ENV VARIABLES HERE OR DEFINE THEM IN A FILE
@@ -105,6 +133,12 @@ jobs:
 
           # Uncomment to disable copy-paste and spell checks
           # DISABLE: COPYPASTE,SPELL
+          #
+          # DISABLE_ERRORS keeps every linter non-blocking. This is deliberate and
+          # pre-existing: the repository has never been linted against a clean
+          # baseline, so flipping it here would turn unrelated historical findings
+          # into merge blockers. Re-enable per linter with DISABLE_ERRORS_LINTERS
+          # once a given linter is verified green.
           DISABLE_ERRORS: true
           DISABLE_LINTERS: SPELL_LYCHEE
           # Uncomment DISABLE_ERRORS_LINTERS if you want to turn errors back on selectively.
@@ -112,7 +146,7 @@ jobs:
 
       # Upload MegaLinter artifacts
       - name: Archive production artifacts
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         if: success() || failure()
         with:
           name: MegaLinter reports
@@ -120,68 +154,158 @@ jobs:
             megalinter-reports
             mega-linter.log
 
-      # Set APPLY_FIXES_IF var for use in future steps
-      - name: Set APPLY_FIXES_IF var
-        run: |
-          printf 'APPLY_FIXES_IF=%s\n' "${{
-            steps.ml.outputs.has_updated_sources == 1 &&
-            (
-              env.APPLY_FIXES_EVENT == 'all' ||
-              env.APPLY_FIXES_EVENT == github.event_name
-            ) &&
-            (
-              github.event_name == 'push' ||
+      # MegaLinter runs as root inside its container and can leave .git owned by
+      # root, which breaks the git commands used to capture the fixes.
+      - name: Reclaim ownership of the git directory
+        if: steps.ml.outputs.has_updated_sources == 1
+        run: sudo chown -Rc "${UID}" .git/
+
+      # Capture the auto-fixes as a patch instead of pushing them from this job.
+      # Workflow files are excluded on purpose: GITHUB_TOKEN cannot push changes
+      # under .github/workflows, and this keeps linter output from ever rewriting
+      # the privileged part of the repository.
+      - name: Capture linter fixes as a patch
+        id: patch
+        if: steps.ml.outputs.has_updated_sources == 1
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          IS_SAME_REPO: >-
+            ${{
+              github.event_name != 'pull_request' ||
               github.event.pull_request.head.repo.full_name == github.repository
-            )
-          }}" >> "${GITHUB_ENV}"
-
-      # Set APPLY_FIXES_IF_* vars for use in future steps
-      - name: Set APPLY_FIXES_IF_* vars
+            }}
+          # The branch the write-back job would actually push to. On a pull
+          # request github.ref is refs/pull/<n>/merge, so it can never be used to
+          # recognise a source branch named main or master.
+          TARGET_BRANCH: ${{ github.event.pull_request.head.ref || github.ref_name }}
         run: |
-          printf 'APPLY_FIXES_IF_PR=%s\n' "${{
-            env.APPLY_FIXES_IF == 'true' &&
-            env.APPLY_FIXES_MODE == 'pull_request'
-          }}" >> "${GITHUB_ENV}"
-          printf 'APPLY_FIXES_IF_COMMIT=%s\n' "${{
-            env.APPLY_FIXES_IF == 'true' &&
-            env.APPLY_FIXES_MODE == 'commit' &&
-            (!contains(fromJSON('["refs/heads/main", "refs/heads/master"]'), github.ref))
-          }}" >> "${GITHUB_ENV}"
+          set -euo pipefail
 
-      # Create pull request if applicable
-      # (for now works only on PR from same repository, not from forks)
-      - name: Create Pull Request with applied fixes
-        uses: peter-evans/create-pull-request@4e1beaa7521e8b457b572c090b25bd3db56bf1c5 # v5.0.3
-        id: cpr
-        if: env.APPLY_FIXES_IF_PR == 'true'
+          apply_fixes="false"
+          if [ "${APPLY_FIXES}" = "none" ]; then
+            echo "APPLY_FIXES is disabled; not writing fixes back."
+          elif [ "${APPLY_FIXES_MODE}" != "commit" ]; then
+            echo "::warning::APPLY_FIXES_MODE='${APPLY_FIXES_MODE}' is not supported by this workflow; only 'commit' writes fixes back."
+          elif [ "${APPLY_FIXES_EVENT}" != "all" ] && [ "${APPLY_FIXES_EVENT}" != "${EVENT_NAME}" ]; then
+            echo "Event '${EVENT_NAME}' does not match APPLY_FIXES_EVENT='${APPLY_FIXES_EVENT}'."
+          elif [ "${IS_SAME_REPO}" != "true" ]; then
+            echo "Pull request originates from a fork; keeping this run read-only."
+          elif [ "${TARGET_BRANCH}" = "main" ] || [ "${TARGET_BRANCH}" = "master" ]; then
+            echo "Refusing to commit fixes directly to '${TARGET_BRANCH}'."
+          else
+            apply_fixes="true"
+          fi
+
+          if [ "${apply_fixes}" = "true" ]; then
+            # Start from a clean index so only paths staged below can reach the
+            # patch, regardless of what the linters left behind.
+            git reset -q
+            git add -A -- . \
+              ':(exclude).github/workflows' \
+              ':(exclude)megalinter-reports' \
+              ':(exclude)mega-linter.log'
+            git diff --cached --binary > "${RUNNER_TEMP}/megalinter-fixes.patch"
+            if [ ! -s "${RUNNER_TEMP}/megalinter-fixes.patch" ]; then
+              echo "No committable changes remain after exclusions."
+              apply_fixes="false"
+            fi
+          fi
+
+          echo "apply_fixes=${apply_fixes}" >> "${GITHUB_OUTPUT}"
+
+      - name: Upload linter fixes patch
+        if: steps.patch.outputs.apply_fixes == 'true'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          token: ${{ secrets.PAT || secrets.GITHUB_TOKEN }}
-          commit-message: "[MegaLinter] Apply linters automatic fixes"
-          title: "[MegaLinter] Apply linters automatic fixes"
-          labels: bot
+          name: megalinter-fixes-patch
+          path: ${{ runner.temp }}/megalinter-fixes.patch
+          retention-days: 1
+          if-no-files-found: error
 
-      - name: Create PR output
-        if: env.APPLY_FIXES_IF_PR == 'true'
+  # Authenticated write-back phase. No linter runs here: the job only replays the
+  # patch produced above onto the source branch of a same-repository pull request.
+  apply-fixes:
+    name: Apply MegaLinter fixes
+    needs: megalinter
+    if: needs.megalinter.outputs.apply_fixes == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    permissions:
+      contents: write
+
+    steps:
+      - name: Harden the runner (Audit all outbound calls)
+        uses: step-security/harden-runner@95d9a5deda9de15063e7595e9719c11c38c90ae2 # v2.13.2
+        with:
+          egress-policy: audit
+
+      - name: Checkout the branch to fix
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # Guarded by apply_fixes: always the head branch of a same-repository
+          # pull request, or a non-default branch push.
+          ref: ${{ github.event.pull_request.head.ref || github.ref_name }}
+          # Credentials are required here so git-auto-commit-action can push.
+          # GITHUB_TOKEN is used on purpose instead of a PAT: pushes made with it
+          # do not re-trigger workflows, which prevents an auto-fix commit loop.
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Download linter fixes patch
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: megalinter-fixes-patch
+          path: ${{ runner.temp }}/megalinter-patch
+
+      - name: Apply linter fixes patch
+        env:
+          PATCH_FILE: ${{ runner.temp }}/megalinter-patch/megalinter-fixes.patch
         run: |
-          echo "PR Number - ${{ steps.cpr.outputs.pull-request-number }}"
-          echo "PR URL - ${{ steps.cpr.outputs.pull-request-url }}"
+          set -euo pipefail
 
-      # Push new commit if applicable
-      # (for now works only on PR from same repository, not from forks)
-      - name: Prepare commit
-        if: env.APPLY_FIXES_IF_COMMIT == 'true'
-        run: sudo chown -Rc $UID .git/
+          test -s "${PATCH_FILE}"
+
+          # --3way lets git fall back to a merge when the branch moved between
+          # the lint job and this job, instead of rejecting the whole patch.
+          git apply --3way --whitespace=nowarn "${PATCH_FILE}"
+
+          # Defence in depth: the lint job already excludes workflow files, so a
+          # patch that touches them means something unexpected happened.
+          #
+          # Validate what actually landed rather than parsing the patch text.
+          # --no-renames makes a rename show up as both its old and its new path,
+          # -z avoids git's pathname quoting for non-ASCII names, and
+          # ls-files --others catches files the patch created.
+          changed=()
+          while IFS= read -r -d '' path; do
+            changed+=("${path}")
+          done < <(
+            git diff --no-renames --name-only -z HEAD
+            git ls-files --others --exclude-standard -z
+          )
+
+          violation=0
+          if [ "${#changed[@]}" -gt 0 ]; then
+            for path in "${changed[@]}"; do
+              case "${path}" in
+                .github/workflows/*)
+                  echo "::error::Refusing to commit: patch touches workflow file '${path}'."
+                  violation=1
+                  ;;
+              esac
+            done
+          fi
+
+          if [ "${violation}" -ne 0 ]; then
+            exit 1
+          fi
+
+          git status --short
 
       - name: Commit and push applied linter fixes
-        uses: stefanzweifel/git-auto-commit-action@3ea6ae190baf489ba007f7c92608f33ce20ef04a # v4.16.0
-        if: env.APPLY_FIXES_IF_COMMIT == 'true'
+        uses: stefanzweifel/git-auto-commit-action@4a55954c782fc1ea30b9056cd3e7a2b40ca8887d # v7.2.0
         with:
-          branch: >-
-            ${{
-              github.event.pull_request.head.ref ||
-              github.head_ref ||
-              github.ref
-            }}
+          branch: ${{ github.event.pull_request.head.ref || github.ref_name }}
           commit_message: "[MegaLinter] Apply linters fixes"
           commit_user_name: megalinter-bot
           commit_user_email: samuel.erde@gmail.com
